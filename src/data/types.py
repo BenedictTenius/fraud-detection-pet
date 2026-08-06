@@ -3,7 +3,6 @@ from typing import Literal, Protocol, TypeAlias
 
 import pandas as pd
 
-
 SplitName: TypeAlias = Literal["train", "valid", "test"]
 DataSplits: TypeAlias = dict[SplitName, pd.DataFrame]
 
