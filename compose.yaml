@@ -1,0 +1,99 @@
+name: fraud-detection
+
+services:
+  triton:
+    build:
+      context: .
+      target: triton
+    image: fraud-detection-triton:26.06
+    command:
+      - tritonserver
+      - --model-repository=/models
+      - --exit-on-error=true
+    shm_size: 1gb
+    environment:
+      CATBOOST_MODEL_PATH: /artifacts/catboost.cbm
+    volumes:
+      - ./triton_models:/models:ro
+      - ./artifacts/baseline:/artifacts:ro
+      - ./artifacts/baseline:/models/fraud_lightgbm/1:ro
+    ports:
+      - "127.0.0.1:8100:8000"
+      - "127.0.0.1:8101:8001"
+      - "127.0.0.1:8102:8002"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v2/health/ready', timeout=2)"]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      target: runtime
+    image: fraud-detection-api:local
+    command: uvicorn src.web.app:app --host 0.0.0.0 --port 8000 --workers 1 --no-access-log
+    environment:
+      FRAUD_MODEL_NAME: ${FRAUD_MODEL_NAME:-lightgbm}
+      FRAUD_ARTIFACT_DIR: /app/artifacts/baseline
+      FRAUD_TRITON_GRPC_URL: triton:8001
+      FRAUD_LOG_LEVEL: ${FRAUD_LOG_LEVEL:-INFO}
+      FRAUD_ENVIRONMENT: ${FRAUD_ENVIRONMENT:-development}
+    volumes:
+      - ./artifacts:/app/artifacts:ro
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      triton:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.13.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.1.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${FRAUD_GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${FRAUD_GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+    volumes:
+      - ./observability/grafana/datasource.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
+      - ./observability/grafana/dashboard-provider.yml:/etc/grafana/provisioning/dashboards/fraud.yml:ro
+      - ./observability/grafana/fraud-drift-dashboard.json:/etc/grafana/dashboards/fraud-drift.json:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:

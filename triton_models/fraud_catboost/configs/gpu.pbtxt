@@ -1,0 +1,26 @@
+name: "fraud_catboost"
+backend: "python"
+max_batch_size: 4096
+
+input [
+  {
+    name: "input__0"
+    data_type: TYPE_FP32
+    dims: [8]
+  }
+]
+
+output [
+  {
+    name: "output__0"
+    data_type: TYPE_FP32
+    dims: [1]
+  }
+]
+
+instance_group [{ kind: KIND_GPU, count: 1, gpus: [0] }]
+
+dynamic_batching {
+  preferred_batch_size: [32, 128, 512]
+  max_queue_delay_microseconds: 500
+}

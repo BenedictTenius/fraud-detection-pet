@@ -1,0 +1,57 @@
+groups:
+  - name: fraud-drift
+    interval: 1m
+    rules:
+      - record: fraud:drift_reference_ratio:max
+        expr: max by (kind, name, model, version, bin) (fraud_drift_reference_ratio)
+
+      - record: fraud:drift_bin_observations:increase_1h
+        expr: sum by (kind, name, model, version, bin) (increase(fraud_drift_bin_observations_total[1h]))
+
+      - record: fraud:drift_observations:increase_1h
+        expr: sum without (bin) (fraud:drift_bin_observations:increase_1h)
+
+      - record: fraud:drift_bin_ratio:1h
+        expr: fraud:drift_bin_observations:increase_1h / ignoring (bin) group_left fraud:drift_observations:increase_1h
+
+      - record: fraud:drift_psi:1h
+        expr: sum without (bin) ((clamp_min(fraud:drift_bin_ratio:1h, 0.000001) - clamp_min(fraud:drift_reference_ratio:max, 0.000001)) * ln(clamp_min(fraud:drift_bin_ratio:1h, 0.000001) / clamp_min(fraud:drift_reference_ratio:max, 0.000001)))
+
+      - record: fraud:drift_bin_observations:increase_24h
+        expr: sum by (kind, name, model, version, bin) (increase(fraud_drift_bin_observations_total[24h]))
+
+      - record: fraud:drift_observations:increase_24h
+        expr: sum without (bin) (fraud:drift_bin_observations:increase_24h)
+
+      - record: fraud:drift_bin_ratio:24h
+        expr: fraud:drift_bin_observations:increase_24h / ignoring (bin) group_left fraud:drift_observations:increase_24h
+
+      - record: fraud:drift_psi:24h
+        expr: sum without (bin) ((clamp_min(fraud:drift_bin_ratio:24h, 0.000001) - clamp_min(fraud:drift_reference_ratio:max, 0.000001)) * ln(clamp_min(fraud:drift_bin_ratio:24h, 0.000001) / clamp_min(fraud:drift_reference_ratio:max, 0.000001)))
+
+      - alert: FraudDriftWarning
+        expr: (fraud:drift_psi:1h > 0.10 and fraud:drift_psi:1h <= 0.25) and on (kind, name, model, version) fraud:drift_observations:increase_1h >= 5000
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Moderate fraud distribution drift"
+          description: "PSI for {{ $labels.kind }}/{{ $labels.name }} ({{ $labels.model }}) is {{ $value | printf \"%.3f\" }}."
+
+      - alert: FraudDriftCritical
+        expr: fraud:drift_psi:1h > 0.25 and on (kind, name, model, version) fraud:drift_observations:increase_1h >= 5000
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High fraud distribution drift"
+          description: "PSI for {{ $labels.kind }}/{{ $labels.name }} ({{ $labels.model }}) is {{ $value | printf \"%.3f\" }}."
+
+      - alert: FraudDriftMetricsMissing
+        expr: absent(fraud_drift_bin_observations_total{job="fraud-api"})
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Fraud drift metrics are missing"
+          description: "Prometheus has not received drift counters from the API for 10 minutes."

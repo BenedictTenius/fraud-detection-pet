@@ -1,0 +1,32 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Test and quality reports
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Generated data and model artifacts
+data/
+artifacts/
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+docs
+
+# Local metric load test
+/scripts/metrics_load_test.py
