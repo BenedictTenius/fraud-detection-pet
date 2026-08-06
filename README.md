@@ -47,6 +47,7 @@ value.
 
 - Chronological data preparation with separate train, validation, and test sets
 - CatBoost and LightGBM training with early stopping
+- Optuna hyperparameter tuning with expanding-window validation
 - Threshold selection on validation data with a minimum recall constraint
 - PR-AUC, average precision, ROC-AUC, KS, precision, recall, F1, MCC, lift,
   calibration, and error-rate metrics
@@ -114,6 +115,7 @@ Development and MLOps:
 - uv for Python environments and locked dependencies
 - python-dotenv for local environment configuration
 - DVC for pipeline and artifact versioning
+- Optuna with TPE sampling, median pruning, and SQLite study storage
 - pytest and pytest-cov
 - HTTPX with an in-process ASGI transport for API tests
 - Ruff
@@ -124,7 +126,7 @@ Development and MLOps:
 
 ```text
 src/data          data validation, transformation, and time-based splitting
-src/model         training, evaluation, SHAP, Triton gateway, and prediction
+src/model         training, Optuna, evaluation, SHAP, Triton, and prediction
 src/metrics       reference distributions and online drift metrics
 src/web           FastAPI endpoints, schemas, and structured logging
 triton_models     Triton model repository and backend configuration
@@ -204,6 +206,70 @@ catboost_shap_importance.csv
 lightgbm_shap_importance.csv
 plots/
 ```
+
+## Tune hyperparameters with Optuna
+
+Optuna tuning is an optional experiment and is not part of the default DVC
+pipeline. This keeps `dvc repro` predictable and prevents a normal training run
+from starting hours of model search.
+
+Run both studies with the default settings:
+
+```bash
+uv run python -m src.model.tuning
+```
+
+For a smaller first run, tune LightGBM only:
+
+```bash
+uv run python -m src.model.tuning \
+  --model lightgbm \
+  --trials 10 \
+  --folds 3 \
+  --gap-steps 1 \
+  --timeout 1800
+```
+
+The tuner uses expanding-window validation over unique PaySim `step` values.
+Complete time steps stay together, a one-step gap separates train and
+validation, and the final 15 percent test period is never loaded into an
+Optuna fold. The objective is mean average precision across the temporal
+validation folds.
+
+Optuna uses a seeded TPE sampler. After the configured startup trials, a median
+pruner can stop an unpromising trial between temporal folds. Models are tuned
+sequentially with one Optuna worker because each tree model already uses all
+available CPU cores.
+
+Results are written to:
+
+```text
+artifacts/tuning/optuna.db
+artifacts/tuning/best_params.json
+artifacts/tuning/catboost_trials.csv
+artifacts/tuning/lightgbm_trials.csv
+```
+
+The SQLite database makes each study resumable. Running the command again adds
+the requested number of trials to the existing study instead of discarding
+previous work.
+
+Train the final baseline with the selected parameters explicitly:
+
+```bash
+uv run python -m src.model.baseline \
+  --tuned-params artifacts/tuning/best_params.json
+```
+
+Without `--tuned-params`, baseline training continues to use the values from
+`src/config.py`. The loader rejects unknown fields and non-numeric values. The
+effective model configuration is saved in the final `metrics.json` report.
+
+The default search spaces cover learning rate, tree complexity,
+regularization, row and column sampling, and class-weight strength. Input
+features are not standardized because CatBoost and LightGBM split on ordered
+feature values and do not benefit from linear scaling in the same way as
+distance-based or linear models.
 
 ## Start the application
 

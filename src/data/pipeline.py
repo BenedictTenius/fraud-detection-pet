@@ -39,9 +39,7 @@ class QuantileTimeSplitter:
 
     def split(self, data: pd.DataFrame) -> dict[SplitName, pd.DataFrame]:
         time = data[self._config.time_column]
-        train_end = time.quantile(
-            self._config.train_share, interpolation="lower"
-        )
+        train_end = time.quantile(self._config.train_share, interpolation="lower")
         valid_end = time.quantile(
             self._config.train_share + self._config.valid_share,
             interpolation="lower",

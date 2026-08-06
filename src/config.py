@@ -123,6 +123,27 @@ class ExplainabilityConfig:
 
 
 @dataclass(frozen=True)
+class TuningConfig:
+    trials: int = 20
+    fold_count: int = 3
+    gap_steps: int = 1
+    timeout_seconds: int = 3_600
+    startup_trials: int = 5
+
+    def __post_init__(self) -> None:
+        if self.trials < 1:
+            raise ValueError("Tuning trials must be positive")
+        if self.fold_count < 2:
+            raise ValueError("Tuning fold_count must be at least two")
+        if self.gap_steps < 0:
+            raise ValueError("Tuning gap_steps must not be negative")
+        if self.timeout_seconds < 1:
+            raise ValueError("Tuning timeout_seconds must be positive")
+        if self.startup_trials < 0:
+            raise ValueError("Tuning startup_trials must not be negative")
+
+
+@dataclass(frozen=True)
 class LoggingConfig:
     level: str = field(
         default_factory=lambda: env_choice(
@@ -191,6 +212,8 @@ class CatBoostConfig:
     learning_rate: float = 0.05
     depth: int = 7
     l2_leaf_reg: float = 5.0
+    random_strength: float = 1.0
+    bagging_temperature: float = 1.0
     early_stopping_rounds: int = 50
     class_weight_power: float = 1.0
 
@@ -204,6 +227,7 @@ class LightGBMConfig:
     min_child_samples: int = 100
     subsample: float = 0.80
     colsample_bytree: float = 0.80
+    reg_alpha: float = 0.0
     reg_lambda: float = 1.0
     early_stopping_rounds: int = 50
     class_weight_power: float = 0.0
@@ -215,6 +239,7 @@ class AppConfig:
     data: DataConfig = field(default_factory=DataConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     explainability: ExplainabilityConfig = field(default_factory=ExplainabilityConfig)
+    tuning: TuningConfig = field(default_factory=TuningConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     prediction: PredictionConfig = field(default_factory=PredictionConfig)
     triton: TritonConfig = field(default_factory=TritonConfig)
