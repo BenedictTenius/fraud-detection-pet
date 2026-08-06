@@ -1,0 +1,191 @@
+{
+  "config": {
+    "training": {
+      "target_column": "isFraud",
+      "random_seed": 42,
+      "minimum_recall": 0.8,
+      "log_period": 50,
+      "device": "cpu",
+      "gpu_devices": "0"
+    },
+    "explainability": {
+      "sample_size": 10000,
+      "max_display": 15
+    },
+    "prediction": {
+      "default_model": "lightgbm",
+      "score_column": "fraud_score",
+      "prediction_column": "is_fraud",
+      "max_transaction_value": 1000000000000,
+      "feature_names": [
+        "amount",
+        "oldbalanceOrg",
+        "oldbalanceDest",
+        "type_CASH_IN",
+        "type_CASH_OUT",
+        "type_DEBIT",
+        "type_PAYMENT",
+        "type_TRANSFER"
+      ]
+    },
+    "catboost": {
+      "iterations": 500,
+      "learning_rate": 0.05,
+      "depth": 7,
+      "l2_leaf_reg": 5.0,
+      "early_stopping_rounds": 50,
+      "class_weight_power": 1.0
+    },
+    "lightgbm": {
+      "n_estimators": 500,
+      "learning_rate": 0.05,
+      "num_leaves": 31,
+      "max_depth": -1,
+      "min_child_samples": 100,
+      "subsample": 0.8,
+      "colsample_bytree": 0.8,
+      "reg_lambda": 1.0,
+      "early_stopping_rounds": 50,
+      "class_weight_power": 0.0
+    }
+  },
+  "datasets": {
+    "train": {
+      "rows": 4463587,
+      "fraud": 3643,
+      "fraud_rate": 0.0008161597387930379
+    },
+    "valid": {
+      "rows": 980416,
+      "fraud": 564,
+      "fraud_rate": 0.0005752660095306482
+    },
+    "test": {
+      "rows": 918617,
+      "fraud": 4006,
+      "fraud_rate": 0.004360903401526425
+    }
+  },
+  "models": {
+    "catboost": {
+      "best_iteration": 491,
+      "scale_pos_weight": 1224.250343123799,
+      "validation": {
+        "pr_auc": 0.7844075758604907,
+        "average_precision": 0.7842952625521269,
+        "roc_auc": 0.9996772200334901,
+        "ks_statistic": 0.9945165188212097,
+        "ks_threshold": 0.715801445443108,
+        "precision": 0.5255813953488372,
+        "recall": 0.8014184397163121,
+        "f1": 0.6348314606741573,
+        "balanced_accuracy": 0.9005010251512002,
+        "matthews_corrcoef": 0.6487682102957325,
+        "specificity": 0.9995836105860885,
+        "false_positive_rate": 0.00041638941391148866,
+        "false_negative_rate": 0.19858156028368795,
+        "brier_score": 0.005694437010605704,
+        "log_loss": 0.019262587036595096,
+        "alert_rate": 0.0008771786670148182,
+        "lift": 913.631931387102,
+        "threshold": 0.9775310326806468,
+        "true_negative": 979444,
+        "false_positive": 408,
+        "false_negative": 112,
+        "true_positive": 452
+      },
+      "test": {
+        "pr_auc": 0.9349202930363941,
+        "average_precision": 0.9348574717527347,
+        "roc_auc": 0.9995604534563391,
+        "ks_statistic": 0.9883813062358571,
+        "ks_threshold": 0.5706338367168924,
+        "precision": 0.8952618453865336,
+        "recall": 0.8065401897154268,
+        "f1": 0.8485883125410374,
+        "balanced_accuracy": 0.9030634496282115,
+        "matthews_corrcoef": 0.8491241819281075,
+        "specificity": 0.9995867095409962,
+        "false_positive_rate": 0.0004132904590038825,
+        "false_negative_rate": 0.19345981028457315,
+        "brier_score": 0.00598522197209805,
+        "log_loss": 0.020301270280052516,
+        "alert_rate": 0.003928731996033167,
+        "lift": 205.29274853306075,
+        "threshold": 0.9775310326806468,
+        "true_negative": 914233,
+        "false_positive": 378,
+        "false_negative": 775,
+        "true_positive": 3231
+      },
+      "explainability": {
+        "method": "TreeSHAP",
+        "output_space": "raw_score",
+        "dataset": "validation",
+        "sample_rows": 10000,
+        "importance_file": "catboost_shap_importance.csv",
+        "summary_plot": "plots/catboost_shap_summary.png"
+      }
+    },
+    "lightgbm": {
+      "best_iteration": 500,
+      "scale_pos_weight": 1.0,
+      "validation": {
+        "pr_auc": 0.8072388308513924,
+        "average_precision": 0.8072595846337456,
+        "roc_auc": 0.9995946730108293,
+        "ks_statistic": 0.9905087707123117,
+        "ks_threshold": 0.00202940462838292,
+        "precision": 0.5330188679245284,
+        "recall": 0.8014184397163121,
+        "f1": 0.6402266288951841,
+        "balanced_accuracy": 0.9005071485249343,
+        "matthews_corrcoef": 0.653348413131683,
+        "specificity": 0.9995958573335565,
+        "false_positive_rate": 0.0004041426664435037,
+        "false_negative_rate": 0.19858156028368795,
+        "brier_score": 0.0002081273731727458,
+        "log_loss": 0.0008585954983189035,
+        "alert_rate": 0.0008649389646843789,
+        "lift": 926.560685133146,
+        "threshold": 0.10059282003381467,
+        "true_negative": 979456,
+        "false_positive": 396,
+        "false_negative": 112,
+        "true_positive": 452
+      },
+      "test": {
+        "pr_auc": 0.9356931960956552,
+        "average_precision": 0.9356828291928452,
+        "roc_auc": 0.9995756142194383,
+        "ks_statistic": 0.9875871112930303,
+        "ks_threshold": 0.003171105083619557,
+        "precision": 0.878625134264232,
+        "recall": 0.8167748377433849,
+        "f1": 0.8465717981888745,
+        "balanced_accuracy": 0.9081403192850923,
+        "matthews_corrcoef": 0.8464926463637905,
+        "specificity": 0.9995058008267996,
+        "false_positive_rate": 0.0004941991732004098,
+        "false_negative_rate": 0.1832251622566151,
+        "brier_score": 0.0012204704254018012,
+        "log_loss": 0.004345850004494082,
+        "alert_rate": 0.00405392018654129,
+        "lift": 201.47777957124464,
+        "threshold": 0.10059282003381467,
+        "true_negative": 914159,
+        "false_positive": 452,
+        "false_negative": 734,
+        "true_positive": 3272
+      },
+      "explainability": {
+        "method": "TreeSHAP",
+        "output_space": "raw_score",
+        "dataset": "validation",
+        "sample_rows": 10000,
+        "importance_file": "lightgbm_shap_importance.csv",
+        "summary_plot": "plots/lightgbm_shap_summary.png"
+      }
+    }
+  }
+}

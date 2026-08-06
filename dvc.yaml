@@ -1,0 +1,29 @@
+stages:
+  prepare:
+    cmd: uv run python -m src.data.process
+    deps:
+      - data/raw/PS_20174392719_1491204439457_log.csv
+      - src/config.py
+      - src/data
+    outs:
+      - data/processed
+
+  train:
+    cmd: uv run python -m src.model.baseline
+    deps:
+      - data/processed
+      - src/config.py
+      - src/model
+      - src/metrics
+    outs:
+      - artifacts/baseline/catboost.cbm
+      - artifacts/baseline/lightgbm.txt
+      - artifacts/baseline/catboost_importance.csv
+      - artifacts/baseline/lightgbm_importance.csv
+      - artifacts/baseline/catboost_shap_importance.csv
+      - artifacts/baseline/lightgbm_shap_importance.csv
+      - artifacts/baseline/drift_reference.json
+      - artifacts/baseline/plots
+    metrics:
+      - artifacts/baseline/metrics.json:
+          cache: false

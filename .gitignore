@@ -18,8 +18,10 @@ htmlcov/
 .ruff_cache/
 
 # Generated data and model artifacts
-data/
-artifacts/
+/data/processed/
+/artifacts/**
+!/artifacts/baseline/
+!/artifacts/baseline/metrics.json
 
 # Local environment
 .env

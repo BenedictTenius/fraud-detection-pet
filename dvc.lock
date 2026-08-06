@@ -1,0 +1,84 @@
+schema: '2.0'
+stages:
+  prepare:
+    cmd: uv run python -m src.data.process
+    deps:
+    - path: data/raw/PS_20174392719_1491204439457_log.csv
+      hash: md5
+      md5: e92a5f7447f43712f1dca473d0b0fa85
+      size: 493534783
+    - path: src/config.py
+      hash: md5
+      md5: f41be5fa88e2d323362b01226ca52e07
+      size: 6487
+    - path: src/data
+      hash: md5
+      md5: adae7089e801240b1e6e15ce46aee478.dir
+      size: 23922
+      nfiles: 9
+    outs:
+    - path: data/processed
+      hash: md5
+      md5: 1fa7b6e11806f6dae76935608e960dd0.dir
+      size: 228004697
+      nfiles: 3
+  train:
+    cmd: uv run python -m src.model.baseline
+    deps:
+    - path: data/processed
+      hash: md5
+      md5: 1fa7b6e11806f6dae76935608e960dd0.dir
+      size: 228004697
+      nfiles: 3
+    - path: src/config.py
+      hash: md5
+      md5: f41be5fa88e2d323362b01226ca52e07
+      size: 6487
+    - path: src/metrics
+      hash: md5
+      md5: 69a75a6ad139eeb88307eef98a33d459.dir
+      size: 19772
+      nfiles: 2
+    - path: src/model
+      hash: md5
+      md5: 80feeb8be627358a24550d4dda253e64.dir
+      size: 147047
+      nfiles: 12
+    outs:
+    - path: artifacts/baseline/catboost.cbm
+      hash: md5
+      md5: dc72897dd7f8561aca1089bce62980f9
+      size: 1090224
+    - path: artifacts/baseline/catboost_importance.csv
+      hash: md5
+      md5: 229912677d7dec7da322f8c7f3bd3107
+      size: 266
+    - path: artifacts/baseline/catboost_shap_importance.csv
+      hash: md5
+      md5: 55779c9a8af66d672cbe3a7140c0c778
+      size: 451
+    - path: artifacts/baseline/drift_reference.json
+      hash: md5
+      md5: e9f8f28ba19c852b94272f9b8809f061
+      size: 4731
+    - path: artifacts/baseline/lightgbm.txt
+      hash: md5
+      md5: 68af7de2edc582483b19b5c127b4af07
+      size: 1774614
+    - path: artifacts/baseline/lightgbm_importance.csv
+      hash: md5
+      md5: fb18f2a9e4e4f7fe493f261bda082bc5
+      size: 151
+    - path: artifacts/baseline/lightgbm_shap_importance.csv
+      hash: md5
+      md5: 2f85cef0e0876d0ad65dcbd9d19afc08
+      size: 451
+    - path: artifacts/baseline/metrics.json
+      hash: md5
+      md5: 448991cb756f865db0fcd4ce214f1a91
+      size: 6032
+    - path: artifacts/baseline/plots
+      hash: md5
+      md5: 0019b2cdd277d9491329f9b0b6ced538.dir
+      size: 1704595
+      nfiles: 8
