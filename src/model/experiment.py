@@ -1,8 +1,10 @@
 import json
+import math
 import os
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
+from typing import ClassVar
 
 os.environ.setdefault(
     "MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "fraud-matplotlib")
@@ -144,8 +146,63 @@ class ArtifactStore:
 
 
 class ReportPlotter:
+    _split_colors: ClassVar[dict[str, str]] = {
+        "train": "#4472C4",
+        "validation": "#ED7D31",
+        "test": "#70AD47",
+    }
+
     def __init__(self, output_dir: Path) -> None:
         self._output_dir = output_dir
+
+    def save_feature_distributions(self, data: DatasetBundle) -> Path:
+        splits = {
+            "train": data.train.features,
+            "validation": data.valid.features,
+            "test": data.test.features,
+        }
+        feature_names = data.train.features.columns.tolist()
+        if not feature_names:
+            raise ValueError("Feature distribution plot requires at least one feature")
+
+        column_count = min(3, len(feature_names))
+        row_count = math.ceil(len(feature_names) / column_count)
+        figure, axes = plt.subplots(
+            row_count,
+            column_count,
+            figsize=(6 * column_count, 4.2 * row_count),
+            squeeze=False,
+        )
+
+        for axis, feature_name in zip(axes.flat, feature_names, strict=False):
+            values = {
+                name: frame[feature_name].to_numpy(dtype="float64")
+                for name, frame in splits.items()
+            }
+            if self._is_binary(values):
+                self._plot_discrete_feature(axis, feature_name, values)
+            else:
+                self._plot_continuous_feature(axis, feature_name, values)
+
+        for axis in axes.flat[len(feature_names) :]:
+            axis.set_visible(False)
+
+        handles, labels = axes.flat[0].get_legend_handles_labels()
+        figure.legend(
+            handles,
+            labels,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 0.965),
+            ncol=3,
+            frameon=False,
+        )
+        figure.suptitle(
+            "Feature distributions across chronological splits",
+            fontsize=16,
+            y=0.995,
+        )
+        figure.tight_layout(rect=(0, 0, 1, 0.92))
+        return self._save_figure(figure, "feature_distributions.png")
 
     def save_training_curves(self, model: ModelRunner) -> Path:
         history = model.training_history()
@@ -272,6 +329,120 @@ class ReportPlotter:
         color_bar.set_ticks((0, 1), labels=("Low", "High"))
         figure.tight_layout()
         return self._save_figure(figure, f"{model_name}_shap_summary.png")
+
+    @classmethod
+    def _plot_continuous_feature(
+        cls,
+        axis: plt.Axes,
+        feature_name: str,
+        values: dict[str, np.ndarray],
+    ) -> None:
+        train_values = values["train"]
+        lower, upper = np.quantile(train_values, (0.005, 0.995))
+        if not upper > lower:
+            pooled_min = min(float(split.min()) for split in values.values())
+            pooled_max = max(float(split.max()) for split in values.values())
+            lower, upper = pooled_min, pooled_max
+        if not upper > lower:
+            lower -= 0.5
+            upper += 0.5
+
+        edges = np.linspace(lower, upper, 121)
+        centers = (edges[:-1] + edges[1:]) / 2
+        widths = np.diff(edges)
+        outside_labels = []
+        for name, split_values in values.items():
+            counts, _ = np.histogram(split_values, bins=edges)
+            density = counts / (len(split_values) * widths)
+            density = cls._smooth_density(density, widths)
+            outside = np.mean((split_values < lower) | (split_values > upper))
+            outside_labels.append(f"{name.capitalize()}: {outside:.1%}")
+            axis.plot(
+                centers,
+                density,
+                color=cls._split_colors[name],
+                linewidth=1.6,
+                label=name.capitalize(),
+            )
+            axis.fill_between(
+                centers,
+                density,
+                color=cls._split_colors[name],
+                alpha=0.16,
+            )
+
+        axis.set(
+            title=feature_name,
+            xlabel="Feature value",
+            ylabel="Probability density",
+            xlim=(lower, upper),
+            ylim=(0, None),
+        )
+        axis.text(
+            0.98,
+            0.96,
+            "Outside view\n" + "\n".join(outside_labels),
+            transform=axis.transAxes,
+            ha="right",
+            va="top",
+            fontsize=8,
+            bbox={"facecolor": "white", "alpha": 0.75, "edgecolor": "none"},
+        )
+        axis.ticklabel_format(axis="both", style="sci", scilimits=(-3, 4))
+        axis.grid(alpha=0.2)
+
+    @classmethod
+    def _plot_discrete_feature(
+        cls,
+        axis: plt.Axes,
+        feature_name: str,
+        values: dict[str, np.ndarray],
+    ) -> None:
+        categories = np.array([0.0, 1.0])
+        positions = np.arange(len(categories), dtype="float64")
+        width = 0.24
+
+        for index, (name, split_values) in enumerate(values.items()):
+            probabilities = np.array(
+                [np.mean(split_values == category) for category in categories]
+            )
+            axis.bar(
+                positions + (index - 1) * width,
+                probabilities,
+                width=width,
+                color=cls._split_colors[name],
+                alpha=0.85,
+                label=name.capitalize(),
+            )
+
+        axis.set(
+            title=feature_name,
+            xlabel="Feature value",
+            ylabel="Probability mass",
+            xticks=positions,
+            xticklabels=[f"{category:g}" for category in categories],
+            ylim=(0, 1.05),
+        )
+        axis.grid(axis="y", alpha=0.2)
+
+    @staticmethod
+    def _is_binary(values: dict[str, np.ndarray]) -> bool:
+        return all(
+            np.logical_or(split_values == 0, split_values == 1).all()
+            for split_values in values.values()
+        )
+
+    @staticmethod
+    def _smooth_density(density: np.ndarray, widths: np.ndarray) -> np.ndarray:
+        offsets = np.arange(-4, 5, dtype="float64")
+        kernel = np.exp(-0.5 * (offsets / 1.5) ** 2)
+        kernel /= kernel.sum()
+        smoothed = np.convolve(density, kernel, mode="same")
+        original_mass = float(np.sum(density * widths))
+        smoothed_mass = float(np.sum(smoothed * widths))
+        if smoothed_mass > 0:
+            smoothed *= original_mass / smoothed_mass
+        return smoothed
 
     @staticmethod
     def _plot_pr_curve(
@@ -461,6 +632,12 @@ class BaselineExperiment:
         ).load_all()
         class_ratio = self._class_ratio(data.train.target)
         report = self._create_report(data)
+        distribution_path = self._plotter.save_feature_distributions(data)
+        report["data_diagnostics"] = {
+            "feature_distributions": str(
+                distribution_path.relative_to(self._config.paths.artifact_dir)
+            )
+        }
         self._drift_reference.fit_features(
             data.valid.features, self._config.data.categorical_column
         )

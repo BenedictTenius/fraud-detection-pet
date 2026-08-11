@@ -19,6 +19,42 @@ prediction traffic, fraud alert rate, and Triton latency.
 
 ## Model results at a glance
 
+### Temporal cross-validation
+
+The current Optuna study uses three expanding time windows with a one-step
+gap. Both models were evaluated on exactly the same validation periods. The
+final 15 percent test period was excluded from tuning.
+
+| Model | Best trial | Completed trials | Mean AP | Mean F1 | F1 standard deviation |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| CatBoost | 2 | 5 | 0.8205 | 0.6716 | 0.0426 |
+| LightGBM | 2 | 7 | 0.7929 | 0.6049 | 0.0249 |
+
+| Fold | Validation steps | CatBoost F1 | LightGBM F1 |
+| --- | --- | ---: | ---: |
+| 1 | 97 to 190 | 0.617 | 0.574 |
+| 2 | 191 to 284 | 0.678 | 0.605 |
+| 3 | 285 to 378 | 0.720 | 0.635 |
+
+![Expanding-window validation F1 by fold](media/temporal_cv_f1.png)
+
+CatBoost leads on both mean Average Precision and mean F1 in this study.
+F1 increases on later folds for both models, but an expanding window also gives
+each later fold more training history. The improvement may come from the larger
+training set, a different temporal mix, or both. It does not prove that model
+quality improves over time. This snapshot belongs to DVC data version
+`e92a5f7447f43712f1dca473d0b0fa85`.
+
+### Feature distributions
+
+The chronological train, validation, and test splits have closely aligned
+feature distributions. Continuous features use smoothed probability density
+curves on a shared scale. Binary one-hot features use probability mass at 0
+and 1. The sharp peaks near zero and long right tails are expected for PaySim
+transaction amounts and account balances.
+
+![Train, validation, and test feature distributions](media/feature_distributions.png)
+
 ### Training curves
 
 CatBoost keeps the training and validation curves close throughout training.
@@ -48,11 +84,13 @@ value.
 - Chronological data preparation with separate train, validation, and test sets
 - CatBoost and LightGBM training with early stopping
 - Optuna hyperparameter tuning with expanding-window validation
+- Per-fold F1 reporting and a CatBoost versus LightGBM validation chart
 - Threshold selection on validation data with a minimum recall constraint
 - PR-AUC, average precision, ROC-AUC, KS, precision, recall, F1, MCC, lift,
   calibration, and error-rate metrics
 - Learning curves, evaluation dashboards, feature importance, and TreeSHAP
   plots
+- Train, validation, and test feature distribution diagnostics on shared axes
 - Single and batch prediction endpoints
 - NVIDIA Triton with the FIL backend for LightGBM and the Python backend for
   CatBoost
@@ -191,7 +229,8 @@ The model pipeline then:
    least 0.80 recall.
 3. Applies that threshold to the untouched test split.
 4. Saves models, metrics, learning curves, evaluation plots, feature
-   importance, SHAP summaries, and drift reference distributions.
+   importance, SHAP summaries, split distribution diagnostics, and drift
+   reference distributions.
 
 Important outputs are written to `artifacts/baseline`:
 
@@ -205,7 +244,15 @@ lightgbm_importance.csv
 catboost_shap_importance.csv
 lightgbm_shap_importance.csv
 plots/
+  feature_distributions.png
 ```
+
+`plots/feature_distributions.png` compares every model input across the
+chronological train, validation, and test splits. Continuous features use a
+shared density scale and a display range fitted on the central 99 percent of
+the training values. Each numeric panel reports the share outside that range.
+Binary one-hot features use probability mass at 0 and 1 because a continuous
+density is not meaningful for discrete values.
 
 ## Tune hyperparameters with Optuna
 
@@ -236,6 +283,93 @@ validation, and the final 15 percent test period is never loaded into an
 Optuna fold. The objective is mean average precision across the temporal
 validation folds.
 
+With three folds, the training window expands forward in time:
+
+```text
+Fold 1: train                    gap  validation
+Fold 2: train plus older data   gap  validation
+Fold 3: train plus older data   gap  validation
+```
+
+For the best trial, the tuner also selects a threshold independently inside
+each validation fold using the same production rule: maximize precision while
+keeping recall at or above 0.80. It then records F1 for that fold. Average
+precision remains the Optuna objective because it is more stable for a highly
+imbalanced target and does not depend on one threshold. Fold F1 is a secondary
+diagnostic, while the untouched final test split remains the final quality
+check.
+
+### Current best parameters
+
+These are the winning values stored in the current `best_params.json`. Values
+are rounded here for readability, while the artifact keeps full precision.
+Trial counts show the state of the resumable SQLite studies when this snapshot
+was exported.
+
+CatBoost:
+
+| Parameter | Best value |
+| --- | ---: |
+| `learning_rate` | 0.121069 |
+| `depth` | 6 |
+| `l2_leaf_reg` | 1.855998 |
+| `random_strength` | 0.005415 |
+| `bagging_temperature` | 1.521211 |
+| `class_weight_power` | 0.50 |
+
+LightGBM:
+
+| Parameter | Best value |
+| --- | ---: |
+| `learning_rate` | 0.036473 |
+| `num_leaves` | 47 |
+| `max_depth` | 9 |
+| `min_child_samples` | 31 |
+| `subsample` | 0.716858 |
+| `colsample_bytree` | 0.746545 |
+| `reg_alpha` | 0.019070 |
+| `reg_lambda` | 0.843101 |
+| `class_weight_power` | 0.00 |
+
+`class_weight_power` is a project-level parameter rather than a native model
+option. A value of zero disables imbalance weighting, while a value of one
+applies the full negative-to-positive class ratio.
+
+The selected thresholds are model-specific. Across the three folds they range
+from 0.720 to 0.818 for CatBoost and from 0.0887 to 0.0941 for LightGBM. Their
+absolute values should not be compared because the models produce differently
+calibrated score distributions.
+
+### Optuna search space
+
+CatBoost parameters:
+
+| Parameter | Range | Sampling |
+| --- | --- | --- |
+| `learning_rate` | 0.01 to 0.20 | Log scale |
+| `depth` | 5 to 10 | Integer |
+| `l2_leaf_reg` | 1.0 to 30.0 | Log scale |
+| `random_strength` | 0.001 to 10.0 | Log scale |
+| `bagging_temperature` | 0.0 to 5.0 | Continuous |
+| `class_weight_power` | 0.0 to 1.0 | Step 0.25 |
+
+LightGBM parameters:
+
+| Parameter | Range | Sampling |
+| --- | --- | --- |
+| `learning_rate` | 0.01 to 0.20 | Log scale |
+| `num_leaves` | 15 to 127 | Integer |
+| `max_depth` | 5 to 12 | Integer |
+| `min_child_samples` | 20 to 500 | Log scale integer |
+| `subsample` | 0.60 to 1.0 | Continuous |
+| `colsample_bytree` | 0.60 to 1.0 | Continuous |
+| `reg_alpha` | 0.0001 to 10.0 | Log scale |
+| `reg_lambda` | 0.0001 to 10.0 | Log scale |
+| `class_weight_power` | 0.0 to 1.0 | Step 0.25 |
+
+The maximum number of trees stays fixed at 500 for both models. Early stopping
+selects the effective iteration count independently in every fold.
+
 Optuna uses a seeded TPE sampler. After the configured startup trials, a median
 pruner can stop an unpromising trial between temporal folds. Models are tuned
 sequentially with one Optuna worker because each tree model already uses all
@@ -248,7 +382,14 @@ artifacts/tuning/optuna.db
 artifacts/tuning/best_params.json
 artifacts/tuning/catboost_trials.csv
 artifacts/tuning/lightgbm_trials.csv
+artifacts/tuning/temporal_cv_metrics.csv
+artifacts/tuning/temporal_cv_f1.png
 ```
+
+`temporal_cv_metrics.csv` contains Average Precision, F1, the selected
+threshold, and time boundaries for every fold. `temporal_cv_f1.png` compares
+CatBoost and LightGBM on the same zero to one F1 scale. The actual winning
+parameter values and their dataset version are stored in `best_params.json`.
 
 The SQLite database makes each study resumable. Running the command again adds
 the requested number of trials to the existing study instead of discarding
@@ -339,10 +480,12 @@ Example response:
 }
 ```
 
-`fraud_score` is the model probability returned by Triton. `threshold` is the
-model-specific operating point selected on validation data. Different models
-can have very different thresholds, so the score should always be interpreted
-together with the model name and its threshold.
+`fraud_score` is the positive-class score returned by Triton. It is bounded
+between zero and one, but it should not be treated as a calibrated estimate of
+the real-world fraud probability. `threshold` is the model-specific operating
+point selected on validation data. Different models can have very different
+thresholds, so the score should always be interpreted together with the model
+name and its threshold.
 
 Available endpoints:
 

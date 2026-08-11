@@ -1,19 +1,31 @@
 import argparse
 import hashlib
 import json
+import os
 import re
+import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, TypeAlias, cast
 
+os.environ.setdefault(
+    "MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "fraud-matplotlib")
+)
+
+import matplotlib
+
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
 import numpy as np
 import optuna
 import pandas as pd
-from sklearn.metrics import average_precision_score
+from sklearn.metrics import average_precision_score, f1_score
 from sklearn.model_selection import TimeSeriesSplit
 
 from src.config import CONFIG, AppConfig
+from src.model.experiment import ThresholdSelector
 from src.model.training import CatBoostRunner, LightGBMRunner
 from src.model.types import DataSplit, ModelName, ModelRunner
 
@@ -246,15 +258,19 @@ class TemporalObjective:
         dataset: TemporalDataset,
         plans: Sequence[TemporalFoldPlan],
         runner_builder: RunnerBuilder,
+        threshold_selector: ThresholdSelector,
     ) -> None:
         self._model_name = model_name
         self._dataset = dataset
         self._plans = plans
         self._runner_builder = runner_builder
+        self._threshold_selector = threshold_selector
 
     def __call__(self, trial: optuna.Trial) -> float:
         parameters = ModelSearchSpace.suggest(self._model_name, trial)
         scores = []
+        f1_scores = []
+        thresholds = []
         best_iterations = []
         for plan in self._plans:
             fold = ExpandingWindowSplitter.materialize(self._dataset, plan)
@@ -265,15 +281,31 @@ class TemporalObjective:
             runner.fit(fold.train, fold.valid, class_weight)
             probability = runner.predict_proba(fold.valid.features)
             score = float(average_precision_score(fold.valid.target, probability))
+            threshold = self._threshold_selector.select(fold.valid.target, probability)
+            fold_f1 = float(
+                f1_score(
+                    fold.valid.target,
+                    probability >= threshold,
+                    zero_division=0,
+                )
+            )
             scores.append(score)
+            f1_scores.append(fold_f1)
+            thresholds.append(threshold)
             best_iterations.append(runner.best_iteration)
             trial.report(float(np.mean(scores)), step=plan.number - 1)
             if trial.should_prune():
                 trial.set_user_attr("fold_scores", scores)
+                trial.set_user_attr("fold_f1_scores", f1_scores)
+                trial.set_user_attr("fold_thresholds", thresholds)
                 raise optuna.TrialPruned()
 
         trial.set_user_attr("fold_scores", scores)
         trial.set_user_attr("fold_score_std", float(np.std(scores)))
+        trial.set_user_attr("fold_f1_scores", f1_scores)
+        trial.set_user_attr("fold_f1_mean", float(np.mean(f1_scores)))
+        trial.set_user_attr("fold_f1_std", float(np.std(f1_scores)))
+        trial.set_user_attr("fold_thresholds", thresholds)
         trial.set_user_attr("best_iterations", best_iterations)
         return float(np.mean(scores))
 
@@ -303,6 +335,7 @@ class HyperparameterTuner:
         self._splitter = ExpandingWindowSplitter(fold_count, gap_steps)
         self._startup_trials = startup_trials
         self._runner_builder = runner_builder or ConfiguredRunnerBuilder(config)
+        self._threshold_selector = ThresholdSelector(config.training.minimum_recall)
 
     def run(
         self,
@@ -324,7 +357,7 @@ class HyperparameterTuner:
         for model_name in model_names:
             study = optuna.create_study(
                 study_name=(
-                    f"fraud-{model_name}-temporal-v1-"
+                    f"fraud-{model_name}-temporal-v2-"
                     f"f{self._fold_count}-g{self._gap_steps}"
                 ),
                 storage=storage,
@@ -352,6 +385,7 @@ class HyperparameterTuner:
                 dataset,
                 plans,
                 self._runner_builder,
+                self._threshold_selector,
             )
             study.optimize(
                 objective,
@@ -371,6 +405,7 @@ class HyperparameterTuner:
                 self._output_dir / f"{model_name}_trials.csv",
                 index=False,
             )
+            temporal_validation = self._temporal_validation(study.best_trial, plans)
             model_results[model_name] = {
                 "study_name": study.study_name,
                 "best_trial": study.best_trial.number,
@@ -378,9 +413,11 @@ class HyperparameterTuner:
                 "best_params": dict(study.best_params),
                 "completed_trials": len(completed),
                 "total_trials": len(study.trials),
+                "temporal_validation": temporal_validation,
             }
             print(
                 f"{model_name}: best temporal AP={study.best_value:.6f}, "
+                f"mean F1={temporal_validation['mean_f1']:.6f}, "
                 f"trial={study.best_trial.number}"
             )
 
@@ -434,10 +471,130 @@ class HyperparameterTuner:
             "folds": self._fold_report(plans),
             "models": previous_models,
         }
+        self._save_fold_metrics(previous_models, plans)
+        self._save_f1_plot(previous_models, plans)
         output_path.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+        return output_path
+
+    def _temporal_validation(
+        self,
+        best_trial: optuna.trial.FrozenTrial,
+        plans: Sequence[TemporalFoldPlan],
+    ) -> dict[str, object]:
+        f1_scores = [float(value) for value in best_trial.user_attrs["fold_f1_scores"]]
+        average_precision = [
+            float(value) for value in best_trial.user_attrs["fold_scores"]
+        ]
+        thresholds = [
+            float(value) for value in best_trial.user_attrs["fold_thresholds"]
+        ]
+        if (
+            not len(f1_scores)
+            == len(average_precision)
+            == len(thresholds)
+            == len(plans)
+        ):
+            raise RuntimeError("Best trial does not contain every temporal fold")
+        return {
+            "fold_f1": f1_scores,
+            "mean_f1": float(np.mean(f1_scores)),
+            "f1_std": float(np.std(f1_scores)),
+            "fold_average_precision": average_precision,
+            "fold_thresholds": thresholds,
+            "threshold_policy": {
+                "name": "maximum_precision_at_minimum_recall",
+                "minimum_recall": self._config.training.minimum_recall,
+            },
+        }
+
+    def _save_fold_metrics(
+        self,
+        models: dict[str, object],
+        plans: Sequence[TemporalFoldPlan],
+    ) -> Path:
+        records = []
+        for model_name in ("catboost", "lightgbm"):
+            model = models.get(model_name)
+            if not isinstance(model, dict):
+                continue
+            validation = model.get("temporal_validation")
+            if not isinstance(validation, dict):
+                continue
+            values = zip(
+                plans,
+                validation["fold_average_precision"],
+                validation["fold_f1"],
+                validation["fold_thresholds"],
+                strict=True,
+            )
+            for plan, average_precision, f1, threshold in values:
+                records.append(
+                    {
+                        "model": model_name,
+                        "fold": plan.number,
+                        "train_end_step": plan.train_end_step,
+                        "valid_start_step": plan.valid_start_step,
+                        "valid_end_step": plan.valid_end_step,
+                        "average_precision": average_precision,
+                        "f1": f1,
+                        "threshold": threshold,
+                    }
+                )
+        output_path = self._output_dir / "temporal_cv_metrics.csv"
+        pd.DataFrame.from_records(records).to_csv(output_path, index=False)
+        return output_path
+
+    def _save_f1_plot(
+        self,
+        models: dict[str, object],
+        plans: Sequence[TemporalFoldPlan],
+    ) -> Path:
+        fold_numbers = np.array([plan.number for plan in plans])
+        series = []
+        for model_name in ("catboost", "lightgbm"):
+            model = models.get(model_name)
+            if not isinstance(model, dict):
+                continue
+            validation = model.get("temporal_validation")
+            if not isinstance(validation, dict):
+                continue
+            scores = np.asarray(validation["fold_f1"], dtype="float64")
+            if len(scores) == len(fold_numbers):
+                series.append((model_name, scores))
+        if not series:
+            raise RuntimeError("No temporal F1 scores are available for plotting")
+
+        figure, axis = plt.subplots(figsize=(9, 5.2))
+        colors = {"catboost": "#4472C4", "lightgbm": "#ED7D31"}
+        width = 0.34 if len(series) == 2 else 0.55
+        offsets = (np.arange(len(series)) - (len(series) - 1) / 2) * width
+        for offset, (model_name, scores) in zip(offsets, series, strict=True):
+            bars = axis.bar(
+                fold_numbers + offset,
+                scores,
+                width=width,
+                color=colors[model_name],
+                alpha=0.88,
+                label=f"{model_name} (mean={scores.mean():.4f})",
+            )
+            axis.bar_label(bars, fmt="%.3f", padding=3, fontsize=9)
+
+        axis.set(
+            title="Expanding-window validation F1 by fold",
+            xlabel="Temporal fold",
+            ylabel="F1 score",
+            xticks=fold_numbers,
+            ylim=(0, 1.05),
+        )
+        axis.grid(axis="y", alpha=0.25)
+        axis.legend(loc="lower right")
+        figure.tight_layout()
+        output_path = self._output_dir / "temporal_cv_f1.png"
+        figure.savefig(output_path, dpi=180, bbox_inches="tight")
+        plt.close(figure)
         return output_path
 
     def _data_version(self) -> str:
@@ -463,6 +620,8 @@ class HyperparameterTuner:
             "fold_count": self._fold_count,
             "gap_steps": self._gap_steps,
             "search_space_version": 1,
+            "validation_report_version": 2,
+            "minimum_recall": self._config.training.minimum_recall,
         }
         encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()[:16]

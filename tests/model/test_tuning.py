@@ -134,17 +134,32 @@ def test_tuner_persists_study_trials_and_best_parameters(tmp_path: Path) -> None
         runner_builder=fake_runner_builder,
     ).run(
         dataset=dataset,
-        model_names=("lightgbm",),
+        model_names=("catboost", "lightgbm"),
         trials=1,
         timeout_seconds=30,
     )
 
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["schema_version"] == 1
+    assert report["validation"] == "expanding_window"
+    assert report["models"]["catboost"]["temporal_validation"]["fold_f1"] == [
+        1.0,
+        1.0,
+        1.0,
+    ]
     assert report["models"]["lightgbm"]["completed_trials"] == 1
     assert report["models"]["lightgbm"]["best_params"]
     assert (output_dir / "optuna.db").is_file()
+    assert (output_dir / "catboost_trials.csv").is_file()
     assert (output_dir / "lightgbm_trials.csv").is_file()
+    assert (output_dir / "temporal_cv_f1.png").is_file()
+
+    metrics = pd.read_csv(output_dir / "temporal_cv_metrics.csv")
+    assert metrics.groupby("model").size().to_dict() == {
+        "catboost": 3,
+        "lightgbm": 3,
+    }
+    assert metrics["f1"].eq(1.0).all()
 
 
 def test_baseline_loads_known_tuned_parameters(tmp_path: Path) -> None:
